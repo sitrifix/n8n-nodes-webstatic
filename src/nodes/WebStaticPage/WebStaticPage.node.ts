@@ -24,35 +24,32 @@ const PLACEHOLDER_HTML = `<!DOCTYPE html>
 
 export class WebStaticPage implements INodeType {
   description: INodeTypeDescription = {
-    displayName: 'Web Page Output',
+    displayName: 'Web Page',
     name: 'webStaticPage',
     icon: 'file:webstaticpage.svg',
-    // Must be 'trigger' so n8n properly registers the webhooks
     group: ['trigger'],
     version: 1,
     description:
       'Serve a live HTML page at a fixed URL. ' +
-      'Another workflow pushes HTML content to it via HTTP POST — the page is instantly updated for all visitors.',
-    defaults: { name: 'Web Page Output' },
+      'Another workflow pushes content to it via HTTP POST — visitors always see the latest version.',
+    defaults: { name: 'Web Page' },
     inputs: [],
     outputs: ['main'],
-    outputNames: ['On Update'],
+    outputNames: ['Updated'],
     credentials: [
       {
-        name: 'webStaticAuth',
+        name: 'httpBasicAuth',
         required: true,
-        displayOptions: { show: { authentication: ['basicAuth'] } },
+        displayOptions: { show: { authentication: ['basicAuth', 'customLogin'] } },
       },
     ],
     webhooks: [
-      // GET — serves the stored HTML to any visitor
       {
         name: 'default',
         httpMethod: 'GET',
         responseMode: 'onReceived',
         path: '={{$parameter["path"]}}',
       },
-      // POST — receives new HTML from another n8n workflow (HTTP Request node)
       {
         name: 'setup',
         httpMethod: 'POST',
@@ -61,7 +58,7 @@ export class WebStaticPage implements INodeType {
       },
     ],
     properties: [
-      // ── Path ─────────────────────────────────────────────────────────
+      // ── Path ─────────────────────────────────────────────────────────────
       {
         displayName: 'Path',
         name: 'path',
@@ -69,15 +66,13 @@ export class WebStaticPage implements INodeType {
         default: 'my-page',
         required: true,
         placeholder: 'weekly-report',
-        description:
-          'URL path. Page accessible at <code>[n8n-host]/webhook/[path]</code> (GET). ' +
-          'Update it by POSTing <code>{ "html": "..." }</code> or a raw HTML string to the same URL from another workflow.',
+        description: 'URL path — page available at <code>[n8n-host]/webhook/[path]</code>',
       },
 
-      // ── Auth (GET only) ───────────────────────────────────────────────
+      // ── Auth ─────────────────────────────────────────────────────────────
       ...authProperties,
 
-      // ── Extra response headers ────────────────────────────────────────
+      // ── Extra response headers ────────────────────────────────────────────
       {
         displayName: 'Additional Response Headers',
         name: 'responseHeaders',
@@ -85,39 +80,28 @@ export class WebStaticPage implements INodeType {
         typeOptions: { multipleValues: true },
         default: {},
         placeholder: 'Add Header',
-        description: 'Extra HTTP headers added to GET responses (e.g. Cache-Control)',
+        description: 'Extra HTTP headers on GET responses (e.g. <code>Cache-Control: no-store</code>)',
         options: [
           {
             name: 'headers',
             displayName: 'Header',
             values: [
-              {
-                displayName: 'Name',
-                name: 'name',
-                type: 'string',
-                default: '',
-                placeholder: 'Cache-Control',
-              },
-              {
-                displayName: 'Value',
-                name: 'value',
-                type: 'string',
-                default: '',
-                placeholder: 'no-store',
-              },
+              { displayName: 'Name', name: 'name', type: 'string', default: '', placeholder: 'Cache-Control' },
+              { displayName: 'Value', name: 'value', type: 'string', default: '', placeholder: 'no-store' },
             ],
           },
         ],
       },
 
-      // ── How-to notice ────────────────────────────────────────────────
+      // ── Usage notice ──────────────────────────────────────────────────────
       {
         displayName:
           '<b>How to update this page from another workflow:</b><br/>' +
-          'Add an <b>HTTP Request</b> node at the end of your workflow:<br/>' +
+          'Add an <b>HTTP Request</b> node:<br/>' +
           '• Method: <code>POST</code><br/>' +
           '• URL: <code>[n8n-host]/webhook/[path]</code><br/>' +
-          '• Body: JSON → <code>{ "html": "{{ $json.html }}" }</code>',
+          '• Body (JSON): <code>{ "html": "{{ $json.html }}" }</code><br/>' +
+          '• Body (raw): paste an HTML string directly',
         name: 'notice',
         type: 'notice',
         default: '',
@@ -130,21 +114,19 @@ export class WebStaticPage implements INodeType {
     const req = this.getRequestObject();
     const res = this.getResponseObject();
 
-    // ── POST: store new HTML (called from another n8n workflow, no browser auth) ──
+    // ── POST: receive and store new HTML from another workflow ────────────────
     if (webhookName === 'setup') {
       const body = req.body as Record<string, unknown> | string | undefined;
-
       let html: string | undefined;
+
       if (typeof body === 'string' && body.trimStart().startsWith('<')) {
-        html = body; // raw HTML string
+        html = body;
       } else if (body && typeof body === 'object' && typeof body['html'] === 'string') {
-        html = body['html']; // { "html": "..." }
+        html = body['html'];
       }
 
       if (!html) {
-        res
-          .status(400)
-          .json({ error: 'Send JSON body { "html": "<your html>" } or a raw HTML string.' });
+        res.status(400).json({ error: 'Send { "html": "..." } or a raw HTML string.' });
         return { noWebhookResponse: true };
       }
 
@@ -156,36 +138,27 @@ export class WebStaticPage implements INodeType {
 
       return {
         noWebhookResponse: true,
-        workflowData: [
-          [
-            {
-              json: {
-                event: 'html_updated',
-                lastUpdated: staticData.lastUpdated,
-                path: this.getNodeParameter('path') as string,
-                htmlLength: html.length,
-              },
-            },
-          ],
-        ],
+        workflowData: [[{
+          json: {
+            event: 'page_updated',
+            path: this.getNodeParameter('path') as string,
+            lastUpdated: staticData.lastUpdated,
+            htmlLength: html.length,
+          },
+        }]],
       };
     }
 
-    // ── GET: serve stored HTML ────────────────────────────────────────────
+    // ── GET: serve stored HTML ────────────────────────────────────────────────
     const authResult = await checkAuth(this, req, res);
     if (authResult !== null) return authResult;
 
-    const responseHeaders = this.getNodeParameter('responseHeaders') as {
-      headers?: Array<{ name: string; value: string }>;
-    };
-
+    const responseHeaders = this.getNodeParameter('responseHeaders') as { headers?: Array<{ name: string; value: string }> };
     const staticData = this.getWorkflowStaticData('node');
     const html = (staticData.html as string | undefined) ?? PLACEHOLDER_HTML;
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    if (staticData.lastUpdated) {
-      res.setHeader('X-Last-Updated', staticData.lastUpdated as string);
-    }
+    if (staticData.lastUpdated) res.setHeader('X-Last-Updated', staticData.lastUpdated as string);
     applyResponseHeaders(res, responseHeaders);
     res.status(200).send(html);
 
