@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-webstatic",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "n8n community node to serve static HTML pages via webhook URL, with optional password protection",
   "keywords": [
     "n8n",
