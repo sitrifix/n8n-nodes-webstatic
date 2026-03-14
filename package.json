@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-webstatic",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "n8n community node to serve static HTML pages via webhook URL, with optional password protection",
   "keywords": [
     "n8n",
@@ -32,7 +32,9 @@
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
-    "credentials": [],
+    "credentials": [
+      "dist/credentials/WebStaticAuth.credentials.js"
+    ],
     "nodes": [
       "dist/nodes/WebStaticTrigger/WebStaticTrigger.node.js",
       "dist/nodes/WebStaticPage/WebStaticPage.node.js"

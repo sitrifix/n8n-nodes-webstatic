@@ -5,7 +5,13 @@ import {
   IWebhookResponseData,
 } from 'n8n-workflow';
 
-import { basicAuthCheck, applyResponseHeaders, authProperties } from '../../shared/auth';
+import {
+  checkAuth,
+  handleLoginPost,
+  isAuthenticated,
+  applyResponseHeaders,
+  authProperties,
+} from '../../shared/auth';
 
 /** Parse application/x-www-form-urlencoded into a plain object */
 function parseFormBody(raw: string): Record<string, string> {
@@ -68,18 +74,25 @@ const DEFAULT_SUBMIT_HTML = `<!DOCTYPE html>
 
 export class WebStaticTrigger implements INodeType {
   description: INodeTypeDescription = {
-    displayName: 'Web Static Trigger',
+    displayName: 'Web Form Trigger',
     name: 'webStaticTrigger',
     icon: 'file:webstatic.svg',
     group: ['trigger'],
     version: 1,
     description:
-      'Serve an HTML page (with forms, buttons, date pickers…). ' +
-      'GET outputs visitor info; form POST outputs submitted data to continue the workflow.',
-    defaults: { name: 'Web Static Trigger' },
+      'Serve an HTML page with a form at a fixed URL. ' +
+      'A visit (GET) and a form submission (POST) each trigger a separate workflow output.',
+    defaults: { name: 'Web Form Trigger' },
     inputs: [],
     outputs: ['main', 'main'],
     outputNames: ['Visit', 'Submit'],
+    credentials: [
+      {
+        name: 'webStaticAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['basicAuth'] } },
+      },
+    ],
     webhooks: [
       {
         name: 'default',
@@ -108,7 +121,7 @@ export class WebStaticTrigger implements INodeType {
           'HTML forms using <code>method="POST" action=""</code> submit to the same URL.',
       },
 
-      // ── Auth (GET only) ────────────────────────────────────────────────
+      // ── Auth ──────────────────────────────────────────────────────────
       ...authProperties,
 
       // ── Page HTML ──────────────────────────────────────────────────────
@@ -183,42 +196,54 @@ export class WebStaticTrigger implements INodeType {
     const req = this.getRequestObject();
     const res = this.getResponseObject();
 
-    // ── POST: form submission ─────────────────────────────────────────
+    // ── POST ──────────────────────────────────────────────────────────────
     if (webhookName === 'setup') {
+      // Parse body
       const contentType = (req.headers['content-type'] ?? '') as string;
-      let body: Record<string, unknown> = {};
-
-      if (contentType.includes('application/x-www-form-urlencoded') && typeof req.body === 'string') {
-        body = parseFormBody(req.body);
-      } else if (contentType.includes('application/x-www-form-urlencoded') && req.body && typeof req.body === 'object') {
-        body = req.body as Record<string, unknown>;
+      let body: Record<string, string> = {};
+      if (contentType.includes('application/x-www-form-urlencoded')) {
+        if (typeof req.body === 'string') {
+          body = parseFormBody(req.body);
+        } else if (req.body && typeof req.body === 'object') {
+          body = req.body as Record<string, string>;
+        }
       } else if (req.body && typeof req.body === 'object') {
-        body = req.body as Record<string, unknown>;
+        body = req.body as Record<string, string>;
       }
 
+      // Login attempt? (only when auth is enabled)
+      const authentication = this.getNodeParameter('authentication') as string;
+      if (authentication === 'basicAuth') {
+        const loginResult = await handleLoginPost(this, req, res, body);
+        if (loginResult !== null) return loginResult;
+
+        // Auth check for regular form submissions
+        if (!(await isAuthenticated(this, req))) {
+          res.redirect(302, req.path);
+          return { noWebhookResponse: true };
+        }
+      }
+
+      // Form submission — respond then trigger workflow
       const submitResponse = this.getNodeParameter('submitResponse') as string;
-
       if (submitResponse === 'redirect') {
-        const url = this.getNodeParameter('submitRedirect') as string;
-        res.redirect(url);
+        res.redirect(this.getNodeParameter('submitRedirect') as string);
       } else {
-        const submitHtml = this.getNodeParameter('submitHtml') as string;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.status(200).send(submitHtml);
+        res.status(200).send(this.getNodeParameter('submitHtml') as string);
       }
 
-      // Output 1 (Submit) — second position in workflowData array
       return {
         noWebhookResponse: true,
         workflowData: [
-          null as unknown as [],          // Output 0 (Visit) — empty
+          null as unknown as [],
           [{ json: { timestamp: new Date().toISOString(), ...body } }],
         ],
       };
     }
 
-    // ── GET: serve the page ───────────────────────────────────────────
-    const authResult = basicAuthCheck(this, req, res);
+    // ── GET: serve the page ───────────────────────────────────────────────
+    const authResult = await checkAuth(this, req, res);
     if (authResult !== null) return authResult;
 
     const htmlContent = this.getNodeParameter('htmlContent') as string;
@@ -235,12 +260,11 @@ export class WebStaticTrigger implements INodeType {
       req.socket?.remoteAddress ||
       'unknown';
 
-    // Output 0 (Visit) — first position in workflowData array
     return {
       noWebhookResponse: true,
       workflowData: [
         [{ json: { timestamp: new Date().toISOString(), ip, userAgent: req.headers['user-agent'] ?? null, path: req.path, query: req.query } }],
-        null as unknown as [],           // Output 1 (Submit) — empty
+        null as unknown as [],
       ],
     };
   }

@@ -5,7 +5,7 @@ import {
   IWebhookResponseData,
 } from 'n8n-workflow';
 
-import { basicAuthCheck, applyResponseHeaders, authProperties } from '../../shared/auth';
+import { checkAuth, applyResponseHeaders, authProperties } from '../../shared/auth';
 
 const PLACEHOLDER_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -24,18 +24,26 @@ const PLACEHOLDER_HTML = `<!DOCTYPE html>
 
 export class WebStaticPage implements INodeType {
   description: INodeTypeDescription = {
-    displayName: 'Web Static Page',
+    displayName: 'Web Page Output',
     name: 'webStaticPage',
     icon: 'file:webstaticpage.svg',
     // Must be 'trigger' so n8n properly registers the webhooks
     group: ['trigger'],
     version: 1,
     description:
-      'Serve a persistent HTML page at a fixed URL. GET serves the page; POST from another workflow updates it. The content stays live between runs.',
-    defaults: { name: 'Web Static Page' },
+      'Serve a live HTML page at a fixed URL. ' +
+      'Another workflow pushes HTML content to it via HTTP POST — the page is instantly updated for all visitors.',
+    defaults: { name: 'Web Page Output' },
     inputs: [],
     outputs: ['main'],
     outputNames: ['On Update'],
+    credentials: [
+      {
+        name: 'webStaticAuth',
+        required: true,
+        displayOptions: { show: { authentication: ['basicAuth'] } },
+      },
+    ],
     webhooks: [
       // GET — serves the stored HTML to any visitor
       {
@@ -63,7 +71,7 @@ export class WebStaticPage implements INodeType {
         placeholder: 'weekly-report',
         description:
           'URL path. Page accessible at <code>[n8n-host]/webhook/[path]</code> (GET). ' +
-          'Update by POSTing JSON <code>{ "html": "..." }</code> to the same URL from another workflow.',
+          'Update it by POSTing <code>{ "html": "..." }</code> or a raw HTML string to the same URL from another workflow.',
       },
 
       // ── Auth (GET only) ───────────────────────────────────────────────
@@ -106,7 +114,7 @@ export class WebStaticPage implements INodeType {
       {
         displayName:
           '<b>How to update this page from another workflow:</b><br/>' +
-          'Add an <b>HTTP Request</b> node at the end of your cron workflow:<br/>' +
+          'Add an <b>HTTP Request</b> node at the end of your workflow:<br/>' +
           '• Method: <code>POST</code><br/>' +
           '• URL: <code>[n8n-host]/webhook/[path]</code><br/>' +
           '• Body: JSON → <code>{ "html": "{{ $json.html }}" }</code>',
@@ -122,7 +130,7 @@ export class WebStaticPage implements INodeType {
     const req = this.getRequestObject();
     const res = this.getResponseObject();
 
-    // ── POST: store new HTML ──────────────────────────────────────────
+    // ── POST: store new HTML (called from another n8n workflow, no browser auth) ──
     if (webhookName === 'setup') {
       const body = req.body as Record<string, unknown> | string | undefined;
 
@@ -146,7 +154,6 @@ export class WebStaticPage implements INodeType {
 
       res.status(200).json({ success: true, lastUpdated: staticData.lastUpdated });
 
-      // Trigger downstream nodes with update metadata
       return {
         noWebhookResponse: true,
         workflowData: [
@@ -164,8 +171,8 @@ export class WebStaticPage implements INodeType {
       };
     }
 
-    // ── GET: serve stored HTML ────────────────────────────────────────
-    const authResult = basicAuthCheck(this, req, res);
+    // ── GET: serve stored HTML ────────────────────────────────────────────
+    const authResult = await checkAuth(this, req, res);
     if (authResult !== null) return authResult;
 
     const responseHeaders = this.getNodeParameter('responseHeaders') as {
