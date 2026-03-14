@@ -1,0 +1,31 @@
+services:
+  n8n:
+    build: .
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    environment:
+      # Custom node location
+      - N8N_CUSTOM_EXTENSIONS=/home/node/custom-extensions
+
+      # Interface locale (pas de cookie sécurisé requis)
+      - N8N_SECURE_COOKIE=false
+
+      # URL publique pour les webhooks (important pour les tests)
+      - WEBHOOK_URL=http://localhost:5678/
+
+      # Auth de l'interface n8n
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin
+
+      # Timezone
+      - GENERIC_TIMEZONE=Europe/Paris
+
+      # Moins de bruit dans les logs
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_LOG_LEVEL=info
+
+volumes:
+  n8n_data:
